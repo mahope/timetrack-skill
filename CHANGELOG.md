@@ -2,6 +2,11 @@
 
 Alle væsentlige ændringer til dette skill dokumenteres her. Følger [Keep a Changelog](https://keepachangelog.com/da/) og [SemVer](https://semver.org/lang/da/).
 
+## [Uudgivet]
+
+### Tilføjet
+- GitHub Actions-lint: Python-syntakstjek, SKILL.md-frontmatter-validering og scan mod committede API-nøgler.
+
 ## [1.0.0] — 2026-06-22
 
 ### Tilføjet

@@ -1,0 +1,35 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python syntax (helper)
+        run: python -m py_compile timetrack.py
+
+      - name: SKILL.md frontmatter til stede
+        run: |
+          head -1 SKILL.md | grep -qx -- '---' || { echo "SKILL.md mangler YAML-frontmatter"; exit 1; }
+          grep -qE '^name:'        SKILL.md || { echo "SKILL.md mangler 'name:'"; exit 1; }
+          grep -qE '^description:'  SKILL.md || { echo "SKILL.md mangler 'description:'"; exit 1; }
+          echo "Frontmatter OK"
+
+      - name: Ingen rigtige API-nøgler committet
+        run: |
+          if grep -rEn 'tk_live_[A-Za-z0-9]{30,}' . --include='*.md' --include='*.py' --include='*.yml'; then
+            echo "::error::Mulig rigtig tk_live_-nøgle fundet — fjern den!"
+            exit 1
+          fi
+          echo "Ingen rigtige nøgler"
