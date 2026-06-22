@@ -1,0 +1,13 @@
+# Indeholder API-nøgler — commit ALDRIG
+.timetrack-secret
+*.secret
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
