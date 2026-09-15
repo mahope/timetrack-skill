@@ -54,21 +54,63 @@ curl -s https://timetrack.dk/api/v1/me -H "Authorization: Bearer $TT"
 | Fakturaer | `GET /invoices` · `POST /invoices` · `POST /invoices/{id}/send` · `POST /invoices/{id}/mark-paid` |
 | Klippekort | `GET /prepaid-packages` · `POST /prepaid-packages` |
 
-**POST /time-entries body:** `clientId` (eller `projectId`), `date` (YYYY-MM-DD, påkrævet), `hours` (positivt tal, påkrævet), `description`, valgfrit `notes`, `isBillable`, `isBilled`, `taskId`, `prepaidPackageId`.
+**POST /time-entries body:** `clientId` (eller `projectId`), `date` (YYYY-MM-DD, påkrævet), `hours` (positivt tal, påkrævet), `description`, valgfrit `notes`, `startTime`, `endTime`, `isBillable`, `isBilled`, `taskId`, `billableRate`, `prepaidPackageId`.
+Rediger: `PATCH /time-entries/{id}` · slet: `DELETE /time-entries/{id}`.
 Øvrige felter/endpoints: se `/api/v1/docs`.
 
 ## Minutter ↔ hours
 
 `hours` er `decimal(5,2)`. Konvertér med **`hours = round(minutter / 60, 2)`** (43 min → 0,72). Læs tilbage med `round(hours * 60)`.
 
+## Klokkeslæt — så posten lander i kalenderen
+
+Uden `startTime`/`endTime` findes posten kun i listen, ikke i TimeTracks kalendervisning. Sæt dem altid, medmindre brugeren kun kender et samlet antal timer.
+
+- **Format: UTC med `Z`** — fx `2026-09-10T05:00:00.000Z`. Offset-formen (`…+02:00`) afvises med `422 Invalid ISO datetime`, selvom den er gyldig ISO 8601. Konvertér fra lokal tid først:
+
+  ```python
+  from datetime import datetime, timedelta, timezone
+  local = timezone(timedelta(hours=2))            # dansk sommertid
+  start = datetime(2026, 9, 10, 7, 0, tzinfo=local)
+  start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")   # 05:00Z
+  ```
+
+- **`endTime` skal være efter `startTime`**, og blokken bør svare til `hours`.
+- **Læg dagens blokke sekventielt uden overlap.** Overlappende blokke ser rodede ud i kalenderen, også når arbejdet reelt kørte parallelt.
+
+## Faldgruber (verificeret mod produktion)
+
+- **`PATCH` opfører sig som en delvis erstatning med bivirkninger.** Udelader du `clientId`, mister posten sin klient, og `billableRate` genberegnes fra din default-sats. Send derfor **altid** `clientId`, `date`, `hours`, `description` og `billableRate` med, også når du kun vil rette ét felt — og **læs posten tilbage bagefter**.
+- **`PATCH`- og `POST`-svar udfolder ikke `client`-objektet.** Feltet ser tomt ud, selvom `clientId` er sat korrekt. Verificér med et `GET` frem for at stole på svaret.
+- **`billableRate` skal sendes som streng** (`"900"`, ikke `900`). Tal kasseres tavst, og posten får klientens sats i stedet. Tjek klientens sats først, og send kun feltet når du bevidst vil afvige.
+- **`limit` kappes tavst ved 100.** Beder du om 500, får du 100 uden fejl. Læs `pagination.totalPages` og hent side 2+ med `page=`, ellers mister du poster uden at opdage det.
+- **Danske tegn på Windows:** send bodyen som `json.dumps(body, ensure_ascii=True)` fra Python. Både inline `curl -d` og `--data-binary @fil` ødelægger æ/ø/å. Verificér efter skrivning: `sorted(set(hex(ord(c)) for c in desc if ord(c) > 127))` skal give `0xe5/0xe6/0xf8` — aldrig `0xc3`-par eller `0xef/0xbf/0xbd`.
+
+## Find ud af hvad der faktisk blev lavet
+
+Det svære ved tidsregistrering er sjældent API-kaldet, men at huske hvad dagen gik med. `scripts/aktivitet.py` (kun stdlib) samler evidensen:
+
+```bash
+python scripts/aktivitet.py --from 2026-09-10 --to 2026-09-15 --repos ~/Projects
+```
+
+Den finder git-repos under de angivne rødder, slår worktrees og kloner sammen (samme commit-sæt tælles én gang), og læser agent-transskripter fra `~/.claude/projects` for aktiv tid pr. arbejdsmappe pr. dag.
+
+**Sådan læses tallene:**
+
+- Aktiv tid er *et signal om hvad der blev arbejdet på*, ikke en stempelur-måling. Parallelle sessioner tælles hver for sig, så en dag kan overstige 24 timer.
+- Sessioner markeret `[LOOP]` er startet af automatik (stop-hook, natteloop). **De er ikke hands-on-arbejde** — tæl dem lavt eller slet ikke.
+- Mange commits betyder ikke mange timer. En agent-drevet oprydning på tværs af ti repos kan være 200 commits og halvanden times tilsyn.
+- Brugeren beder ofte selv om et konkret antal minutter undervejs ("track 15 minutter på det"). Søg efter den slags i transskriptet før du gætter — og tjek om posten allerede findes.
+
 ## Arbejdsgang — log tid
 
-1. `GET /clients?q=…` → find `clientId` (gæt aldrig id'er).
-2. `GET /time-entries?clientId=…&from=…&to=…` → se eksisterende, undgå dubletter.
-3. Saml det udførte arbejde (kun `auto_opdag_opgaver: ja` → scan git/noter).
-4. Hvis `bekræft_før_oprettelse: ja` → **foreslå** en tabel (dato · opgave · tid) og **vent på OK**. Ellers opret direkte.
-5. `POST /time-entries` (eller `/batch`). Overhold `maks_entries_pr_kørsel`.
-6. **Verificér**: list perioden igen og vis tiden tilbage.
+1. `GET /clients?q=…` → find `clientId` (gæt aldrig id'er). Notér klientens sats.
+2. `GET /time-entries?clientId=…&from=…&to=…` → se eksisterende, undgå dubletter. Husk `limit`-loftet på 100.
+3. Saml det udførte arbejde (kun `auto_opdag_opgaver: ja` → `scripts/aktivitet.py`, se ovenfor).
+4. Hvis `bekræft_før_oprettelse: ja` → **foreslå** en tabel (dato · klokkeslæt · opgave · tid) og **vent på OK**. Ellers opret direkte.
+5. `POST /time-entries` (eller `/batch`) med `startTime`/`endTime` i UTC. Overhold `maks_entries_pr_kørsel` — flere poster end grænsen køres i flere omgange efter aftale.
+6. **Verificér**: list perioden igen og vis tiden tilbage, inkl. klient, sats og klokkeslæt.
 
 `timetrack.py` (valgfri, kun Python-stdlib) har `list` og `create` klar. Ren `curl` virker også uden afhængigheder.
 
@@ -95,6 +137,9 @@ curl -s https://timetrack.dk/api/v1/me -H "Authorization: Bearer $TT"
 - Du sætter runde hele timer hvor `tids_præcision: minutter` → brug minutter.
 - Du opretter uden at have tjekket eksisterende entries → risiko for dublet.
 - Du er på vej til at slette noget → stop, det er aldrig default.
+- Du `PATCH`'er uden at sende `clientId` med → posten mister sin klient og sats.
+- Du udleder timer direkte fra commit-antal eller fra en `[LOOP]`-session → det er ikke hands-on-tid.
+- Du fik færre poster tilbage end ventet → tjek `pagination.totalPages` før du konkluderer at der ikke er mere.
 
 ## Support
 
