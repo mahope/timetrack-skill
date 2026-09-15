@@ -16,8 +16,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Python syntax (helper)
-        run: python -m py_compile timetrack.py
+      - name: Python syntax (helper + scripts)
+        run: python -m py_compile timetrack.py scripts/*.py
+
+      - name: Scripts kan køre --help
+        run: python scripts/aktivitet.py --help > /dev/null
 
       - name: SKILL.md frontmatter til stede
         run: |
